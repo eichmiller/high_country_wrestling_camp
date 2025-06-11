@@ -41,20 +41,9 @@ const firebaseConfig = {
 const firebaseApp = initializeApp(firebaseConfig);
 const authInstance = getAuth(firebaseApp);
 const dbInstance = getFirestore(firebaseApp);
+
 let firebaseInitializationError = null;
 
-try {
-    if (typeof __firebase_config !== 'undefined' && __firebase_config) {
-        firebaseConfigFromEnv = JSON.parse(__firebase_config);
-    } else {
-        console.warn("__firebase_config is undefined. Using placeholder.");
-        firebaseConfigFromEnv = { apiKey: "FALLBACK", authDomain: "FALLBACK", projectId: "FALLBACK" };
-    }
-} catch (e) {
-    console.error("Error parsing __firebase_config JSON:", e);
-    firebaseInitializationError = `Error parsing Firebase config: ${e.message}`;
-    firebaseConfigFromEnv = {};
-}
 
 if (typeof __app_id !== 'undefined' && __app_id) {
     app_id_from_env = __app_id;
