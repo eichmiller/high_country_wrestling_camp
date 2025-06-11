@@ -1,11 +1,10 @@
-/* global __firebase_config, __app_id, __initial_auth_token, Papa */
+/* global Papa */
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { initializeApp } from 'firebase/app';
 import {
     getAuth,
     signInAnonymously,
     onAuthStateChanged,
-    signInWithCustomToken
 } from 'firebase/auth';
 import {
     getFirestore,
@@ -19,15 +18,13 @@ import {
     writeBatch,
     getDocs,
     orderBy,
-    limit,
     where,
     updateDoc
 } from 'firebase/firestore';
 
-// --- PapaParse & jsPDF/html2canvas CSV Parser ---
-// These scripts will be loaded dynamically by the App component.
-
 // --- Firebase Configuration ---
+// This app is configured for deployment. It uses environment variables
+// from a .env file for security. See the deployment guide.
 const firebaseConfig = {
   apiKey: process.env.REACT_APP_API_KEY,
   authDomain: process.env.REACT_APP_AUTH_DOMAIN,
@@ -37,35 +34,21 @@ const firebaseConfig = {
   appId: process.env.REACT_APP_APP_ID
 };
 
-// Initialize Firebase
-const firebaseApp = initializeApp(firebaseConfig);
-const authInstance = getAuth(firebaseApp);
-const dbInstance = getFirestore(firebaseApp);
+let firebaseApp, authInstance, dbInstance, firebaseInitializationError;
 
-let firebaseInitializationError = null;
-
-
-if (typeof __app_id !== 'undefined' && __app_id) {
-    app_id_from_env = __app_id;
-}
-
-// Initialize Firebase
-let firebaseApp;
-let authInstance;
-let dbInstance;
-
-if (!firebaseInitializationError) {
-    try {
-        firebaseApp = initializeApp(firebaseConfigFromEnv);
-        authInstance = getAuth(firebaseApp);
-        dbInstance = getFirestore(firebaseApp);
-    } catch (error) {
-        console.error("FATAL: Firebase initialization failed:", error);
-        firebaseInitializationError = `Firebase Core Initialization Failed: ${error.message}.`;
+try {
+    if (!firebaseConfig.apiKey || firebaseConfig.apiKey === 'YOUR_API_KEY') {
+        throw new Error("Firebase config is not set. Please create a .env file with your Firebase credentials.");
     }
+    firebaseApp = initializeApp(firebaseConfig);
+    authInstance = getAuth(firebaseApp);
+    dbInstance = getFirestore(firebaseApp);
+} catch (error) {
+    console.error("FATAL: Firebase initialization failed:", error);
+    firebaseInitializationError = `Firebase Core Initialization Failed: ${error.message}. Make sure your .env file is set up correctly.`;
 }
 
-// --- Constants (UPDATED)---
+// --- Constants ---
 const NFHS_WEIGHT_CLASSES = [
     { name: '106', max: 106.0 }, { name: '113', max: 113.0 },
     { name: '120', max: 120.0 }, { name: '126', max: 126.0 },
@@ -138,7 +121,7 @@ function App() {
     const [appInitializationError, setAppInitializationError] = useState(firebaseInitializationError);
     const [currentPage, setCurrentPage] = useState('dashboard');
     const [notification, setNotification] = useState({ message: '', type: '' });
-    
+
     const [sessions, setSessions] = useState([]);
     const [activeSessionId, setActiveSessionId] = useState(null);
     const [isSessionModalOpen, setIsSessionModalOpen] = useState(false);
@@ -171,26 +154,26 @@ function App() {
     useEffect(() => {
         if (appInitializationError || !authInstance) { setIsAuthReady(true); return; }
         const unsubscribe = onAuthStateChanged(authInstance, async (user) => {
-            if (user) { setUserId(user.uid); setIsAuthReady(true); } 
+            if (user) { setUserId(user.uid); setIsAuthReady(true); }
             else { try {
-                const token = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
-                if (token) await signInWithCustomToken(authInstance, token);
-                else await signInAnonymously(authInstance);
+                await signInAnonymously(authInstance);
             } catch (error) { setAppInitializationError(`Sign-in failed: ${error.message}.`); setIsAuthReady(true); }}
         }, (error) => { setAppInitializationError(`Auth listener error: ${error.message}`); setIsAuthReady(true); });
         return () => unsubscribe();
     }, [appInitializationError]);
 
     const getUserDataPath = useCallback(() => {
-        if (!userId) return null;
-        return `artifacts/${app_id_from_env}/users/${userId}`;
+        if (!userId || !dbInstance) return null;
+        // Use the projectId from the config as the unique app identifier.
+        const appId = dbInstance.app.options.projectId || 'default-wrestling-app';
+        return `artifacts/${appId}/users/${userId}`;
     }, [userId]);
 
     useEffect(() => {
         const userDataPath = getUserDataPath();
         if (!userDataPath) return;
         const sessionsPath = `${userDataPath}/sessions`;
-        
+
         const q = query(collection(dbInstance, sessionsPath), orderBy("createdAt", "desc"));
         const unsubscribe = onSnapshot(q, (snapshot) => {
             const fetchedSessions = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
@@ -236,7 +219,7 @@ function App() {
             console.error("CompTeams snapshot error", err);
             setLoading(false);
         }));
-        
+
         return () => { unsubs.forEach(unsub => unsub()); };
     }, [activeSessionId, getCollectionPath]);
 
@@ -244,7 +227,7 @@ function App() {
         setNotification({ message, type });
         setTimeout(() => setNotification({ message: '', type: '' }), duration);
     };
-    
+
     const handleClearAllData = async () => {
         if (!activeSessionId) return;
         setLoading(true);
@@ -258,16 +241,16 @@ function App() {
             snapshot.docs.forEach(doc => batch.delete(doc.ref));
         }
 
-        try { await batch.commit(); showNotification('All data for this session has been cleared.', 'success'); } 
+        try { await batch.commit(); showNotification('All data for this session has been cleared.', 'success'); }
         catch (error) { showNotification(`Error clearing data: ${error.message}`, 'error'); }
         setLoading(false);
     };
-    
+
     const renderPage = () => {
         if (loading && !activeSessionId) return <LoadingSpinner message="Loading Sessions..." />;
         if (loading) return <LoadingSpinner />;
         if (!activeSessionId && sessions.length > 0) return <div className="p-8 text-center"><p>Please select a session to begin.</p></div>
-        
+
         switch(currentPage) {
             case 'dashboard': return <DashboardScreen allData={allData} handleClearAllData={handleClearAllData} db={dbInstance} getUserDataPath={getUserDataPath} showNotification={showNotification} />;
             case 'weighIn': return <WeighInScreen allData={allData} getCollectionPath={getCollectionPath} showNotification={showNotification} db={dbInstance} />;
@@ -281,7 +264,7 @@ function App() {
             default: return <DashboardScreen allData={allData} handleClearAllData={handleClearAllData} db={dbInstance} getUserDataPath={getUserDataPath} showNotification={showNotification}/>;
         }
     };
-    
+
     if (appInitializationError) return <div className="min-h-screen bg-red-100 flex flex-col justify-center items-center p-6 text-center"><h1 className="text-3xl font-bold text-red-700 mb-4">Application Error</h1><p className="text-red-600 mb-2">Could not initialize the application:</p><p className="text-sm text-red-500 bg-red-50 p-3 rounded-md shadow">{appInitializationError}</p></div>;
     if (!isAuthReady || !userId) return <div className="min-h-screen bg-gray-100 flex flex-col justify-center items-center"><LoadingSpinner message="Authenticating..." /></div>;
 
@@ -298,9 +281,9 @@ function App() {
                 </div>
             </header>
             {notification.message && (<div className={`p-3 text-center text-white sticky top-0 z-50 ${notification.type === 'success' ? 'bg-green-500' : 'bg-red-500'}`}>{notification.message}</div>)}
-            
+
             {isSessionModalOpen && <SessionManagerModal db={dbInstance} getUserDataPath={getUserDataPath} sessions={sessions} onClose={() => setIsSessionModalOpen(false)} setActiveSessionId={setActiveSessionId} showNotification={showNotification} />}
-            
+
             {!activeSessionId && !loading && <div className="p-8 text-center text-gray-400"><p>No session selected. Please create or select a session to begin.</p></div>}
 
             {activeSessionId && (
@@ -352,13 +335,13 @@ function SessionManagerModal({ db, getUserDataPath, sessions, onClose, setActive
         setConfirmText('');
         showNotification('Session deleted. Note: Underlying data must be cleared manually via the dashboard if needed.', 'success', 6000);
     };
-    
+
     const handleDuplicateSession = async (sourceSession, newName) => {
         if (!newName.trim() || !sessionsPath) return showNotification('New session name cannot be empty.', 'error');
         showNotification('Starting duplication... this may take a moment.', 'success');
-        
-        const newSessionData = { 
-            name: newName.trim(), 
+
+        const newSessionData = {
+            name: newName.trim(),
             createdAt: new Date(),
             customWeightsDivI: sourceSession.customWeightsDivI || [],
             customWeightsDivII: sourceSession.customWeightsDivII || [],
@@ -370,7 +353,7 @@ function SessionManagerModal({ db, getUserDataPath, sessions, onClose, setActive
             const sourcePath = `${getUserDataPath()}/sessions/${sourceSession.id}/${collName}`;
             const destPath = `${getUserDataPath()}/sessions/${newSessionRef.id}/${collName}`;
             const snapshot = await getDocs(query(collection(db, sourcePath)));
-            
+
             let batch = writeBatch(db);
             let count = 0;
             for (const d of snapshot.docs) {
@@ -385,12 +368,12 @@ function SessionManagerModal({ db, getUserDataPath, sessions, onClose, setActive
                  await batch.commit();
             }
         }
-        
+
         showNotification('Duplication complete!', 'success');
         setActiveSessionId(newSessionRef.id);
         onClose();
     };
-    
+
     return (
         <Modal onClose={onClose} title="Manage Sessions">
             <div className="space-y-4 text-gray-800">
@@ -437,7 +420,7 @@ function DashboardScreen({ allData, handleClearAllData, db, getUserDataPath, sho
     const [isClearModalOpen, setIsClearModalOpen] = useState(false);
     const [isWeightModalOpen, setIsWeightModalOpen] = useState(false);
     const [confirmText, setConfirmText] = useState('');
-    
+
     const stats = React.useMemo(() => {
         if (loading || !activeSession) return {};
         const weighedInCount = wrestlers.filter(w => w.actualWeight > 0).length;
@@ -451,7 +434,7 @@ function DashboardScreen({ allData, handleClearAllData, db, getUserDataPath, sho
         const availableFarmOuts = wrestlers.filter(w => w.status === 'FarmOutAvailable');
         const farmOutsDiv1 = availableFarmOuts.filter(w => w.farmOutDivision === 'I').reduce((acc, w) => ({ ...acc, [w.calculatedWeightClass]: (acc[w.calculatedWeightClass] || 0) + 1 }), {});
         const farmOutsDiv2 = availableFarmOuts.filter(w => w.farmOutDivision === 'II').reduce((acc, w) => ({ ...acc, [w.calculatedWeightClass]: (acc[w.calculatedWeightClass] || 0) + 1 }), {});
-        
+
         const homeTeamsWeighInDone = homeTeams.filter(t => t.weighInComplete).length;
         const homeTeamsRosterDone = homeTeams.filter(t => t.rosterComplete).length;
         const homeTeamWeighInPercent = homeTeams.length > 0 ? (homeTeamsWeighInDone / homeTeams.length) * 100 : 0;
@@ -477,7 +460,7 @@ function DashboardScreen({ allData, handleClearAllData, db, getUserDataPath, sho
             link.click();
             document.body.removeChild(link);
         };
-        
+
         if (type === 'all') {
             exportCSV(homeTeams.map(({id, ...rest}) => rest), 'home-teams-export.csv');
             exportCSV(competitionTeams.map(({id, ...rest}) => rest), 'competition-teams-export.csv');
@@ -488,7 +471,7 @@ function DashboardScreen({ allData, handleClearAllData, db, getUserDataPath, sho
             exportCSV(dataToExport, filename);
         }
     };
-    
+
     if (loading) return <LoadingSpinner message="Loading Dashboard Data..." />;
 
     const StatCard = ({ title, value, className }) => (<div className={`p-4 rounded-lg shadow-md ${className}`}><p className="text-sm font-medium opacity-80">{title}</p><p className="text-3xl font-bold">{value}</p></div>);
@@ -558,7 +541,7 @@ function DashboardScreen({ allData, handleClearAllData, db, getUserDataPath, sho
 function WeightClassManagerModal({ session, db, getUserDataPath, onClose }) {
     const [weightsI, setWeightsI] = useState(() => (session.customWeightsDivI || []).map(w => ({...w, id: crypto.randomUUID() })));
     const [weightsII, setWeightsII] = useState(() => (session.customWeightsDivII || []).map(w => ({...w, id: crypto.randomUUID() })));
-    
+
     const handleSave = async () => {
         const sessionRef = doc(db, `${getUserDataPath()}/sessions`, session.id);
         const finalWeightsI = weightsI.map(({id, ...rest}) => ({ name: String(rest.max), max: rest.max })).filter(w => w.max > 0);
@@ -569,7 +552,7 @@ function WeightClassManagerModal({ session, db, getUserDataPath, onClose }) {
         });
         onClose();
     };
-    
+
     const DivisionEditor = ({ title, weights, setWeights }) => {
         const add = () => setWeights(prev => [...(prev || []), {id: crypto.randomUUID(), name: '', max: ''}]);
         const remove = (id) => setWeights(prev => prev.filter(w => w.id !== id));
@@ -582,7 +565,7 @@ function WeightClassManagerModal({ session, db, getUserDataPath, onClose }) {
                 return w;
             }));
         };
-        
+
         return (<div className="p-2 border rounded-md"><h4 className="font-bold">{title}</h4><div className="space-y-2 mt-2">{(weights || []).map((cw) => (
             <div key={cw.id} className="flex gap-2 items-center">
                 <input type="number" value={cw.max} onChange={e=>update(cw.id, e.target.value)} placeholder="Max Wt" className="p-1 border rounded w-full" />
@@ -590,7 +573,7 @@ function WeightClassManagerModal({ session, db, getUserDataPath, onClose }) {
             </div>
         ))}</div><button onClick={add} className="text-sm mt-2 bg-gray-200 px-2 py-1 rounded">Add Custom Weight</button></div>);
     }
-    
+
     return <Modal onClose={onClose} title="Manage Division Weight Classes">
         <div className="space-y-4 text-gray-800">
             <p className="text-sm text-gray-600">Add custom weight classes for each division. The name will automatically be set from the max weight.</p>
@@ -625,7 +608,7 @@ function WeighInScreen({ allData, getCollectionPath, showNotification, db }) {
     const handleWrestlerChange = (id, field, value) => {
         setTeamWrestlers(prev => prev.map(w => w.id === id ? { ...w, [field]: value } : w));
     };
-    
+
     const handleCellSave = async (wrestlerId, field, value) => {
         const wrestlersPath = getCollectionPath('wrestlers');
         if (!wrestlersPath || !db) return;
@@ -636,7 +619,7 @@ function WeighInScreen({ allData, getCollectionPath, showNotification, db }) {
             updateData.actualWeight = numericWeight;
             updateData.calculatedWeightClass = getWeightClass(numericWeight);
         }
-        
+
         try {
             await updateDoc(doc(db, wrestlersPath, wrestlerId), updateData);
             showNotification('Saved!', 'success', 1500);
@@ -664,7 +647,7 @@ function WeighInScreen({ allData, getCollectionPath, showNotification, db }) {
             showNotification(`Error saving: ${error.message}`, 'error');
         }
     };
-    
+
     const handleSetFarmOutDivision = async (wrestlerId, division) => {
         const updateData = {
             farmOutDivision: division,
@@ -672,7 +655,7 @@ function WeighInScreen({ allData, getCollectionPath, showNotification, db }) {
             isFemale: false,
             isMiddleSchool: false,
         };
-        
+
         setTeamWrestlers(prev => prev.map(w => (w.id === wrestlerId ? { ...w, ...updateData } : w)));
 
         const wrestlersPath = getCollectionPath('wrestlers');
@@ -684,7 +667,7 @@ function WeighInScreen({ allData, getCollectionPath, showNotification, db }) {
             showNotification(`Error saving: ${error.message}`, 'error');
         }
     };
-    
+
     const handleBulkAction = async () => {
         if (!bulkAction || !selectedHomeTeamId) return;
         const wrestlersToUpdate = teamWrestlers.filter(w => !w.isFemale && !w.isMiddleSchool);
@@ -705,7 +688,7 @@ function WeighInScreen({ allData, getCollectionPath, showNotification, db }) {
         wrestlersToUpdate.forEach(w => {
             batch.update(doc(db, wrestlersPath, w.id), updateData);
         });
-        
+
         try {
             await batch.commit();
             showNotification(`Bulk update successful for ${wrestlersToUpdate.length} wrestlers.`, 'success');
@@ -724,7 +707,7 @@ function WeighInScreen({ allData, getCollectionPath, showNotification, db }) {
                      {homeTeams.sort((a,b)=>a.name.localeCompare(b.name)).map(ht => <option key={ht.id} value={ht.id}>{ht.name}</option>)}
                  </select>
             </div>
-            
+
             {loading && selectedHomeTeamId && <LoadingSpinner />}
             {selectedHomeTeamId && !loading && (
                  <>
@@ -752,11 +735,11 @@ function WeighInScreen({ allData, getCollectionPath, showNotification, db }) {
                                 <tr key={w.id}>
                                     <td className="px-2 py-2">{w.name}</td>
                                     <td className="px-2 py-2">
-                                        <input 
-                                            type="number" 
-                                            step="0.1" 
-                                            value={w.actualWeight} 
-                                            onChange={e => handleWrestlerChange(w.id, 'actualWeight', e.target.value)} 
+                                        <input
+                                            type="number"
+                                            step="0.1"
+                                            value={w.actualWeight}
+                                            onChange={e => handleWrestlerChange(w.id, 'actualWeight', e.target.value)}
                                             onBlur={e => handleCellSave(w.id, 'actualWeight', e.target.value)}
                                             onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); e.target.blur(); } }}
                                             className="w-24 p-1 border rounded-md bg-gray-700 border-gray-600"/>
@@ -784,14 +767,14 @@ function WeighInScreen({ allData, getCollectionPath, showNotification, db }) {
 
 // --- HomeTeamWrestlerManager Component ---
 function HomeTeamWrestlerManager({ team, wrestlers, getCollectionPath, showNotification, db }) {
-    
+
     const unassignedWrestlers = useMemo(() => {
         if (!team) return [];
         return wrestlers
             .filter(w => w.homeTeamId === team.id && w.status === 'Unassigned')
             .sort((a,b) => (a.actualWeight || 0) - (b.actualWeight || 0));
     }, [wrestlers, team]);
-    
+
     const handleUpdateWrestler = async (wrestlerId, updateData) => {
         if (!wrestlerId) return;
         const wrestlerRef = doc(db, getCollectionPath('wrestlers'), wrestlerId);
@@ -849,7 +832,7 @@ function HomeTeamsScreen({ allData, getCollectionPath, showNotification, db }) {
         setCurrentTeam(team);
         setIsAddEditModalOpen(true);
     };
-    
+
     const handleOpenManageModal = (team) => {
         setCurrentTeam(team);
         setIsManageModalOpen(true);
@@ -858,7 +841,7 @@ function HomeTeamsScreen({ allData, getCollectionPath, showNotification, db }) {
     const handleSaveTeam = async () => {
         if (!currentTeam.name.trim() || !colPath || !db) return;
         try {
-            const dataToSave = { 
+            const dataToSave = {
                 name: currentTeam.name.trim(),
                 state: currentTeam.state || ''
             };
@@ -876,11 +859,11 @@ function HomeTeamsScreen({ allData, getCollectionPath, showNotification, db }) {
     const handleDeleteTeam = async (teamId) => {
         if (!colPath || !db) return;
         if (window.confirm("Are you sure? This is irreversible.")) {
-            try { await deleteDoc(doc(db, colPath, teamId)); showNotification('Home team deleted.', 'success'); } 
+            try { await deleteDoc(doc(db, colPath, teamId)); showNotification('Home team deleted.', 'success'); }
             catch (error) { showNotification(`Error: ${error.message}`, 'error'); }
         }
     };
-    
+
     const handleCheckboxChange = async (teamId, field, value) => {
         if (!colPath || !db) return;
         try {
@@ -890,7 +873,7 @@ function HomeTeamsScreen({ allData, getCollectionPath, showNotification, db }) {
             showNotification(`Error updating: ${error.message}`, 'error');
         }
     };
-    
+
     const handlePrintTeam = (team) => {
         if (typeof window.jspdf === 'undefined') {
             showNotification("PDF Library not loaded. Please wait and try again.", "error");
@@ -900,7 +883,7 @@ function HomeTeamsScreen({ allData, getCollectionPath, showNotification, db }) {
         const teamWrestlers = wrestlers
             .filter(w => w.homeTeamId === team.id)
             .sort((a,b) => (a.actualWeight || 0) - (b.actualWeight || 0));
-            
+
         const lines = teamWrestlers.map(w => {
             let placement = w.status;
             if (w.status === 'Starter') {
@@ -910,7 +893,7 @@ function HomeTeamsScreen({ allData, getCollectionPath, showNotification, db }) {
             }
             return `${w.name} (${w.actualWeight || 'N/A'} lbs): ${placement}`;
         });
-        
+
         const { jsPDF } = window.jspdf;
         const pdf = new jsPDF();
         pdf.setFont("helvetica", "bold");
@@ -983,7 +966,7 @@ function HomeTeamsScreen({ allData, getCollectionPath, showNotification, db }) {
             )}
             {isManageModalOpen && currentTeam && (
                 <Modal onClose={() => setIsManageModalOpen(false)} title={`Manage Wrestlers for ${currentTeam.name}`}>
-                    <HomeTeamWrestlerManager 
+                    <HomeTeamWrestlerManager
                         team={currentTeam}
                         wrestlers={wrestlers}
                         getCollectionPath={getCollectionPath}
@@ -1007,7 +990,7 @@ function WrestlersScreen({ allData, getCollectionPath, showNotification, db }) {
     const [filters, setFilters] = useState({ name: '', homeTeamName: '', status: '', calculatedWeightClass: '' });
     const [sortConfig, setSortConfig] = useState({ key: 'name', direction: 'ascending' });
     const wrestlersColPath = getCollectionPath('wrestlers');
-    
+
     const filteredAndSortedWrestlers = useMemo(() => {
         let sortableWrestlers = [...wrestlers];
 
@@ -1020,7 +1003,7 @@ function WrestlersScreen({ allData, getCollectionPath, showNotification, db }) {
         });
 
         if (searchTerm) {
-            sortableWrestlers = sortableWrestlers.filter(w => 
+            sortableWrestlers = sortableWrestlers.filter(w =>
                 w.name.toLowerCase().includes(searchTerm.toLowerCase())
             );
         }
@@ -1041,7 +1024,7 @@ function WrestlersScreen({ allData, getCollectionPath, showNotification, db }) {
                 return 0;
             });
         }
-        
+
         return sortableWrestlers;
     }, [wrestlers, searchTerm, filters, sortConfig]);
 
@@ -1062,13 +1045,13 @@ function WrestlersScreen({ allData, getCollectionPath, showNotification, db }) {
         if (wrestlerData.status !== 'Starter' && wrestlerData.status !== 'Reserve') { Object.assign(wrestlerData, { competitionTeamId: null, competitionTeamName: null, assignedWeightClassSlot: null }); }
 
         try {
-            if (id) { await setDoc(doc(db, wrestlersColPath, id), wrestlerData); } 
+            if (id) { await setDoc(doc(db, wrestlersColPath, id), wrestlerData); }
             else { await addDoc(collection(db, wrestlersColPath), wrestlerData); }
             showNotification('Wrestler saved!', 'success');
             resetModal();
         } catch (error) { showNotification(`Error: ${error.message}`, 'error'); }
     };
-    
+
     const handleDivisionCheckboxChange = (field, checked) => {
         if (field === 'isFemale' && checked) {
             setCurrentWrestler(prev => ({ ...prev, isFemale: true, isMiddleSchool: false }));
@@ -1078,17 +1061,17 @@ function WrestlersScreen({ allData, getCollectionPath, showNotification, db }) {
             setCurrentWrestler(prev => ({ ...prev, [field]: checked }));
         }
     };
-    
+
     const resetModal = () => { setIsModalOpen(false); setCurrentWrestler(initialWrestlerState); };
     const openEditModal = (wrestler) => { setCurrentWrestler({ ...initialWrestlerState, ...wrestler, actualWeight: wrestler.actualWeight?.toString() || '' }); setIsModalOpen(true); };
     const handleDeleteWrestler = async (wrestlerId) => {
         if (!wrestlersColPath || !db) return;
         if (window.confirm("Are you sure? This is irreversible.")) {
-            try { await deleteDoc(doc(db, wrestlersColPath, wrestlerId)); showNotification('Wrestler deleted.', 'success'); } 
+            try { await deleteDoc(doc(db, wrestlersColPath, wrestlerId)); showNotification('Wrestler deleted.', 'success'); }
             catch (error) { showNotification(`Error: ${error.message}`, 'error'); }
         }
     };
-    
+
     const getDivisionTags = (w) => {
         let tags = [];
         if (w.isFemale) tags.push({label: 'Female', color: 'bg-pink-100 text-pink-800'});
@@ -1096,7 +1079,7 @@ function WrestlersScreen({ allData, getCollectionPath, showNotification, db }) {
         if (w.status === 'FarmOutAvailable' && w.farmOutDivision) tags.push({label: `Farm Div ${w.farmOutDivision}`, color: 'bg-blue-100 text-blue-800'});
         return tags;
     };
-    
+
     const handleFilterChange = (key, value) => {
         setFilters(prev => ({ ...prev, [key]: value }));
     };
@@ -1110,7 +1093,7 @@ function WrestlersScreen({ allData, getCollectionPath, showNotification, db }) {
     };
 
     const SortableHeader = ({ children, name }) => {
-        const icon = sortConfig.key === name 
+        const icon = sortConfig.key === name
             ? (sortConfig.direction === 'ascending' ? '▲' : '▼')
             : '↕';
         return <th onClick={() => requestSort(name)} className="px-3 py-3 text-left text-xs font-medium uppercase cursor-pointer select-none">
@@ -1177,7 +1160,7 @@ function CompetitionTeamsScreen({ allData, getCollectionPath, showNotification, 
     const handleSaveCompTeam = async () => {
         if (!currentCompTeam.name.trim() || !currentCompTeam.associatedHomeTeamId) return showNotification('Team name and home team are required.', 'error');
         if (!compTeamsColPath || !db) return;
-        
+
         const selectedHomeTeam = homeTeams.find(ht => ht.id === currentCompTeam.associatedHomeTeamId);
         const { id, ...teamData } = {
             ...currentCompTeam,
@@ -1186,13 +1169,13 @@ function CompetitionTeamsScreen({ allData, getCollectionPath, showNotification, 
         };
 
         try {
-            if (id) { await setDoc(doc(db, compTeamsColPath, id), teamData); } 
+            if (id) { await setDoc(doc(db, compTeamsColPath, id), teamData); }
             else { await addDoc(collection(db, compTeamsColPath), teamData); }
             showNotification('Competition team saved.', 'success');
             setIsModalOpen(false);
         } catch (error) { showNotification(`Error: ${error.message}`, 'error'); }
     };
-    
+
     const handleDeleteCompTeam = async (teamId) => {
         const wrestlersPath = getCollectionPath('wrestlers');
         if (!compTeamsColPath || !wrestlersPath || !db) return;
@@ -1208,17 +1191,17 @@ function CompetitionTeamsScreen({ allData, getCollectionPath, showNotification, 
             } catch (error) { showNotification(`Error: ${error.message}`, 'error'); }
         }
     };
-    
+
     const handlePrintTeam = (team) => {
         if (typeof window.jspdf === 'undefined') {
             showNotification("PDF Library not loaded. Please wait and try again.", "error");
             return;
         }
         showNotification('Generating Roster PDF...', 'success');
-        
+
         const customWeights = team.division === 'I' ? (activeSession.customWeightsDivI || []) : (activeSession.customWeightsDivII || []);
         const allWeights = [...NFHS_WEIGHT_CLASSES, ...customWeights].sort((a, b) => a.max - b.max);
-        
+
         let lines = [];
         allWeights.forEach(wc => {
             const wrestlerId = team.roster?.[wc.name];
@@ -1333,9 +1316,9 @@ function RosterBuilderScreen({ allData, getCollectionPath, showNotification, db 
         if (!selectedCompTeam) return null;
         return homeTeams.find(ht => ht.id === selectedCompTeam.associatedHomeTeamId);
     }, [selectedCompTeam, homeTeams]);
-    
+
     const [isAssignModalOpen, setIsAssignModalOpen] = useState(false);
-    const [assignTarget, setAssignTarget] = useState({ type: '', slot: '' }); 
+    const [assignTarget, setAssignTarget] = useState({ type: '', slot: '' });
     const [availableWrestlersForSlot, setAvailableWrestlersForSlot] = useState({ home: [], farm: [] });
     const [modalTab, setModalTab] = useState('home');
     const [weighInWrestler, setWeighInWrestler] = useState(null);
@@ -1343,7 +1326,7 @@ function RosterBuilderScreen({ allData, getCollectionPath, showNotification, db 
     const { weighedInUnassigned, pendingWeighIn } = useMemo(() => {
         if (!selectedCompTeam) return { weighedInUnassigned: [], pendingWeighIn: [] };
         const baseUnassigned = wrestlers.filter(w => w.homeTeamId === selectedCompTeam.associatedHomeTeamId && w.status === 'Unassigned' && !w.isFemale && !w.isMiddleSchool);
-        
+
         const weighedIn = baseUnassigned
             .filter(w => w.actualWeight > 0)
             .sort((a, b) => (a.actualWeight || 0) - (b.actualWeight || 0));
@@ -1365,11 +1348,11 @@ function RosterBuilderScreen({ allData, getCollectionPath, showNotification, db 
             }
         }
     };
-    
+
     const handleUpdateWrestler = async (wrestlerId, updateData) => {
         const batch = writeBatch(db);
         const wrestlerRef = doc(db, getCollectionPath('wrestlers'), wrestlerId);
-        
+
         batch.update(wrestlerRef, updateData);
 
         if (updateData.status === 'Reserve' && selectedCompTeamId) {
@@ -1383,7 +1366,7 @@ function RosterBuilderScreen({ allData, getCollectionPath, showNotification, db 
                 }
             }
         }
-        
+
         try {
             await batch.commit();
             showNotification('Wrestler status updated.', 'success');
@@ -1391,7 +1374,7 @@ function RosterBuilderScreen({ allData, getCollectionPath, showNotification, db 
             showNotification(`Error updating wrestler: ${error.message}`, 'error');
         }
     };
-    
+
     const handleOpenAssignModal = (type, slot = '') => {
         if (!selectedCompTeam || !activeSession) return;
         setAssignTarget({ type, slot });
@@ -1401,7 +1384,7 @@ function RosterBuilderScreen({ allData, getCollectionPath, showNotification, db 
         const currentTeamReserves = selectedCompTeam.reserves || [];
         const divCustomWeights = selectedCompTeam.division === 'I' ? (activeSession.customWeightsDivI || []) : (activeSession.customWeightsDivII || []);
         const allCombinedWeights = [...NFHS_WEIGHT_CLASSES, ...divCustomWeights].sort((a,b) => a.max - b.max);
-        
+
         const available = wrestlers.filter(w => {
             if (!w.actualWeight || w.actualWeight <= 0) return false;
             if (w.isFemale || w.isMiddleSchool) return false;
@@ -1423,7 +1406,7 @@ function RosterBuilderScreen({ allData, getCollectionPath, showNotification, db 
             }
             return false;
         };
-        
+
         const homeWrestlers = available.filter(w => w.homeTeamId === selectedCompTeam.associatedHomeTeamId && (w.status === 'Unassigned' || (w.status === 'Reserve' && w.competitionTeamId === selectedCompTeam.id && type === 'starter')) && weightEligible(w));
         const farmWrestlers = available.filter(w => w.status === 'FarmOutAvailable' && w.farmOutDivision === selectedCompTeam.division && weightEligible(w));
 
@@ -1435,10 +1418,10 @@ function RosterBuilderScreen({ allData, getCollectionPath, showNotification, db 
         const wrestlersColPath = getCollectionPath('wrestlers');
         const compTeamsColPath = getCollectionPath('competitionTeams');
         if (!selectedCompTeam || !wrestlersColPath || !compTeamsColPath || !db) return;
-        
+
         const wrestlerToAssign = wrestlers.find(w => w.id === wrestlerId);
         if (!wrestlerToAssign) return;
-        
+
         const batch = writeBatch(db);
         const compTeamRef = doc(db, compTeamsColPath, selectedCompTeam.id);
         const wrestlerRef = doc(db, wrestlersColPath, wrestlerId);
@@ -1452,13 +1435,13 @@ function RosterBuilderScreen({ allData, getCollectionPath, showNotification, db 
         if (assignTarget.type === 'starter') {
             const slot = assignTarget.slot;
             const currentWrestlerInSlotId = newCompTeamData.roster[slot];
-            if (currentWrestlerInSlotId) { 
+            if (currentWrestlerInSlotId) {
                  const previousWrestler = wrestlers.find(w => w.id === currentWrestlerInSlotId);
                  let previousWrestlerUpdate = { status: 'Unassigned', competitionTeamId: null, competitionTeamName: null, assignedWeightClassSlot: null };
                  if (previousWrestler && previousWrestler.homeTeamId !== newCompTeamData.associatedHomeTeamId) {
                      previousWrestlerUpdate.status = 'FarmOutAvailable';
                  }
-                 batch.update(doc(db, wrestlersColPath, currentWrestlerInSlotId), previousWrestlerUpdate); 
+                 batch.update(doc(db, wrestlersColPath, currentWrestlerInSlotId), previousWrestlerUpdate);
             }
             newCompTeamData.roster[slot] = wrestlerId;
             Object.assign(newWrestlerStatusUpdate, { status: 'Starter', assignedWeightClassSlot: slot });
@@ -1469,13 +1452,13 @@ function RosterBuilderScreen({ allData, getCollectionPath, showNotification, db 
             Object.assign(newWrestlerStatusUpdate, { status: 'Reserve', assignedWeightClassSlot: null });
         }
 
-        batch.set(compTeamRef, newCompTeamData); 
+        batch.set(compTeamRef, newCompTeamData);
         batch.update(wrestlerRef, newWrestlerStatusUpdate);
 
-        try { await batch.commit(); showNotification(`${wrestlerToAssign.name} assigned.`, 'success'); setIsAssignModalOpen(false); } 
+        try { await batch.commit(); showNotification(`${wrestlerToAssign.name} assigned.`, 'success'); setIsAssignModalOpen(false); }
         catch (error) { showNotification(`Error: ${error.message}`, 'error'); }
     };
-    
+
     const handleUnassignWrestler = async (type, slotOrWrestlerId) => {
         const wrestlersColPath = getCollectionPath('wrestlers');
         const compTeamsColPath = getCollectionPath('competitionTeams');
@@ -1494,7 +1477,7 @@ function RosterBuilderScreen({ allData, getCollectionPath, showNotification, db 
             newCompTeamData.reserves = (newCompTeamData.reserves || []).filter(id => id !== wrestlerToUnassignId);
         }
         if (!wrestlerToUnassignId) return;
-        
+
         const wrestlerToUnassign = wrestlers.find(w => w.id === wrestlerToUnassignId);
         let wrestlerUpdateData = { status: 'Unassigned', competitionTeamId: null, competitionTeamName: null, assignedWeightClassSlot: null };
         if (wrestlerToUnassign && wrestlerToUnassign.homeTeamId !== selectedCompTeam.associatedHomeTeamId) {
@@ -1513,7 +1496,7 @@ function RosterBuilderScreen({ allData, getCollectionPath, showNotification, db 
         const customWeights = selectedCompTeam.division === 'I' ? (activeSession.customWeightsDivI || []) : (activeSession.customWeightsDivII || []);
         return [...NFHS_WEIGHT_CLASSES, ...customWeights].sort((a,b) => a.max - b.max);
     }, [selectedCompTeam, activeSession]);
-    
+
     const availableWrestlersBySlot = useMemo(() => {
         if (!selectedCompTeam || !activeSession) return {};
         const availabilityMap = {};
@@ -1542,12 +1525,12 @@ function RosterBuilderScreen({ allData, getCollectionPath, showNotification, db 
         });
         return availabilityMap;
     }, [wrestlers, selectedCompTeam, activeSession, allWeightClassesForTeam]);
-    
+
     return (
         <div className="bg-gray-800 p-4 sm:p-6 rounded-lg shadow-lg">
             <h2 className="text-xl sm:text-2xl font-semibold text-yellow-400 mb-4">Roster Builder</h2>
             <div className="mb-6"><select value={selectedCompTeamId} onChange={(e) => setSelectedCompTeamId(e.target.value)} className="w-full max-w-md p-2 border rounded-md shadow-sm bg-gray-700 border-gray-600" disabled={loading}><option value="">-- Select a Team --</option>{competitionTeams.filter(t => t.division === 'I' || t.division === 'II').sort((a,b)=>a.name.localeCompare(b.name)).map(team => (<option key={team.id} value={team.id}>{team.name} (Div: {team.division})</option>))}</select></div>
-            
+
             {weighInWrestler && <SingleWrestlerWeighInModal wrestler={weighInWrestler} getCollectionPath={getCollectionPath} db={db} showNotification={showNotification} onClose={() => setWeighInWrestler(null)} />}
 
             {loading ? <LoadingSpinner /> : selectedCompTeam && (
@@ -1568,7 +1551,7 @@ function RosterBuilderScreen({ allData, getCollectionPath, showNotification, db 
                         {(selectedCompTeam.reserves && selectedCompTeam.reserves.length > 0) ? (<ul className="space-y-2">{selectedCompTeam.reserves.map(wId => { const w = wrestlers.find(wr => wr.id === wId);
                             return (<li key={wId} className="p-3 bg-gray-700 rounded-md border-gray-600 border flex justify-between items-center gap-2"><div><p className="text-sm text-yellow-300 font-medium">{w?.name || 'Unknown'}</p>{w && <p className="text-xs text-gray-400">({w.homeTeamName} - {w.actualWeight || 'N/A'} lbs)</p>}</div><button onClick={() => handleUnassignWrestler('reserve', wId)} className="text-xs bg-red-200 text-red-800 py-1 px-2 rounded-md">Remove</button></li>)})}
                         </ul>) : (<p className="text-sm text-gray-400">No reserves assigned.</p>)}</div>
-                    
+
                     <div className="mt-8">
                         <h4 className="text-lg font-medium mb-3">Available Home Team Wrestlers</h4>
                         <div className="overflow-x-auto">
@@ -1639,7 +1622,7 @@ function PlaceFarmOutsScreen({ allData, getCollectionPath, showNotification, db 
         if (!selectedWrestler || !activeSession) return [];
         const divCustomWeights = selectedWrestler.farmOutDivision === 'I' ? (activeSession.customWeightsDivI || []) : (activeSession.customWeightsDivII || []);
         const allDivisionWeights = [...NFHS_WEIGHT_CLASSES, ...divCustomWeights].sort((a,b) => a.max - b.max);
-        
+
         const wrestlerWeight = Math.floor(selectedWrestler.actualWeight);
         const wrestlerClassIndex = allDivisionWeights.findIndex(wc => wc.max >= wrestlerWeight);
         const eligibleWeightClasses = [allDivisionWeights[wrestlerClassIndex]?.name, allDivisionWeights[wrestlerClassIndex + 1]?.name].filter(Boolean);
@@ -1673,10 +1656,10 @@ function PlaceFarmOutsScreen({ allData, getCollectionPath, showNotification, db 
         batch.update(teamRef, { roster: newRoster });
         batch.update(wrestlerRef, { status: 'Starter', competitionTeamId: team.id, competitionTeamName: team.name, assignedWeightClassSlot: slot });
 
-        try { await batch.commit(); showNotification(`${wrestler.name} placed on ${team.name} at ${slot}.`, 'success'); setSelectedWrestler(null); } 
+        try { await batch.commit(); showNotification(`${wrestler.name} placed on ${team.name} at ${slot}.`, 'success'); setSelectedWrestler(null); }
         catch (error) { showNotification(`Error placing wrestler: ${error.message}`, 'error'); }
     };
-    
+
     return (
         <div className="bg-gray-800 p-4 sm:p-6 rounded-lg shadow-lg">
             <h2 className="text-xl sm:text-2xl font-semibold text-yellow-400 mb-4">Place Available Farm-Outs</h2>
@@ -1746,10 +1729,10 @@ function CsvImporterScreen({ allData, getCollectionPath, showNotification, db })
 
     const handleImport = () => {
         if (!file || isImporting || !db || typeof Papa === 'undefined') return;
-        
+
         setIsImporting(true);
         const homeTeamNameMap = homeTeams.reduce((map, team) => { map[team.name.toLowerCase().trim()] = team.id; return map; }, {});
-        
+
         Papa.parse(file, {
             header: true, skipEmptyLines: true,
             complete: async (results) => {
@@ -1760,7 +1743,7 @@ function CsvImporterScreen({ allData, getCollectionPath, showNotification, db })
                 const notFoundTeams = new Set();
                 let processedCount = 0;
                 let batchCount = 0;
-                
+
                 for (const row of results.data) {
                     const docRef = doc(collection(db, colPath));
                     let data;
@@ -1786,8 +1769,8 @@ function CsvImporterScreen({ allData, getCollectionPath, showNotification, db })
                         batchCount = 0;
                     }
                 }
-                
-                try { 
+
+                try {
                     if (batchCount > 0) await batch.commit();
                     if (notFoundTeams.size > 0) {
                         const failedNames = Array.from(notFoundTeams).join(', ');
@@ -1804,17 +1787,17 @@ function CsvImporterScreen({ allData, getCollectionPath, showNotification, db })
                     } else {
                         showNotification(`No data to import.`, 'info');
                     }
-                } 
+                }
                 catch (err) { showNotification(`Import error: ${err.message}`, 'error'); }
                 setIsImporting(false); setFile(null); setPreviewData(null);
             },
             error: (err) => { showNotification(`CSV parsing error: ${err.message}`, 'error'); setIsImporting(false); }
         });
     };
-    
-    const formats = { 
-        homeTeams: { req: "name", opt: "state"}, 
-        wrestlers: { req: "name, homeTeamName", opt: "actualWeight, status, isFemale, isMiddleSchool, farmOutDivision" }, 
+
+    const formats = {
+        homeTeams: { req: "name", opt: "state"},
+        wrestlers: { req: "name, homeTeamName", opt: "actualWeight, status, isFemale, isMiddleSchool, farmOutDivision" },
         competitionTeams: { req: "name, associatedHomeTeamName, division (I or II)", opt: "pool" }
     };
 
@@ -1834,7 +1817,7 @@ function CsvImporterScreen({ allData, getCollectionPath, showNotification, db })
 // --- ReportsScreen ---
 function ReportsScreen({ allData, showNotification }) {
     const { wrestlers, homeTeams, competitionTeams, loading, activeSession } = allData;
-    
+
     const generatePdf = async (reportName, pages) => {
         if (typeof window.jspdf === 'undefined') {
             showNotification("PDF generation library not loaded yet. Please try again.", "error");
@@ -1844,15 +1827,15 @@ function ReportsScreen({ allData, showNotification }) {
 
         const { jsPDF } = window.jspdf;
         const pdf = new jsPDF({ orientation: 'p', unit: 'mm', format: 'a4' });
-        
+
         for (let i = 0; i < pages.length; i++) {
             if (i > 0) pdf.addPage();
             const page = pages[i];
-            
+
             pdf.setFont("helvetica", "bold");
             pdf.setFontSize(16);
             pdf.text(page.title, 10, 20);
-            
+
             pdf.setFont("helvetica", "normal");
             pdf.setFontSize(10);
             let y = 30;
@@ -1870,18 +1853,18 @@ function ReportsScreen({ allData, showNotification }) {
                 y += 7;
             }
         }
-        
+
         pdf.save(`${reportName}.pdf`);
     };
 
     const handleCompTeamReport = () => {
         const pages = [];
         const allTeams = [...competitionTeams].sort((a,b) => a.name.localeCompare(b.name));
-        
+
         allTeams.forEach(team => {
             const customWeights = team.division === 'I' ? (activeSession.customWeightsDivI || []) : (activeSession.customWeightsDivII || []);
             const allWeights = [...NFHS_WEIGHT_CLASSES, ...customWeights].sort((a, b) => a.max - b.max);
-            
+
             let lines = [];
             allWeights.forEach(wc => {
                 const wrestlerId = team.roster?.[wc.name]; const wrestler = wrestlerId ? wrestlers.find(w => w.id === wrestlerId) : null;
@@ -1889,12 +1872,12 @@ function ReportsScreen({ allData, showNotification }) {
                 const line = `${wc.name}: ${wrestler ? `${wrestler.name} ${isFarmOut ? `(${wrestler.homeTeamName})` : ''}` : 'FORFEIT'}`;
                 lines.push(line);
             });
-            
+
             if (team.reserves?.length > 0) {
                 lines.push('');
                 lines.push('--- Reserves ---');
                 const reserveWrestlers = team.reserves.map(rId => wrestlers.find(w => w.id === rId)).filter(Boolean);
-                
+
                 const reservesByWeight = reserveWrestlers.reduce((acc, w) => {
                     const wc = w.calculatedWeightClass || 'N/A';
                     if (!acc[wc]) acc[wc] = [];
@@ -1914,7 +1897,7 @@ function ReportsScreen({ allData, showNotification }) {
         });
         generatePdf("Competition-Team-Rosters", pages);
     };
-    
+
     const handleHomeTeamReport = () => {
         const pages = [];
         homeTeams.sort((a,b)=>a.name.localeCompare(b.name)).forEach(ht => {
